@@ -179,17 +179,25 @@ const THEME_KEY = 'solveit_theme';
 const MAX_HISTORY = 30;
 const PROXY_TIMEOUT_MS = 12000;
 
-const SYSTEM_PROMPT = `You are SolveIt, an expert problem solver. The user has given you the text content of a webpage. Your job is to figure out what the page is about and provide a comprehensive solution or explanation.
+const SYSTEM_PROMPT = `You are SolveIt, an expert problem solver and reverse engineer. The user has given you the text content AND source code of a webpage. Your job is to deeply analyze the page, find patterns, understand the underlying logic, and teach the user exactly HOW to solve it — not just give an overview.
 
 Instructions:
-1. First, identify the type of content (math problem, coding challenge, quiz, puzzle, homework, article, form, tutorial, etc.)
-2. Provide a clear, well-structured solution using markdown formatting
-3. Use step-by-step reasoning where appropriate
-4. Include the final answer prominently
-5. If the content contains multiple problems, solve all of them
-6. If it's an article or informational page, provide a thorough summary with key takeaways
-7. If it's a coding problem, provide clean, working code with explanations
-8. For math, show all work clearly
+1. First, identify what the page is (math problem, coding challenge, quiz, puzzle, game, homework, interactive app, form, etc.)
+2. Look at the SOURCE CODE carefully — analyze JavaScript logic, algorithms, answer keys, validation patterns, hidden data, API calls, and scoring mechanisms
+3. Identify PATTERNS: What rules govern the content? What's the underlying logic? What formula or algorithm is being used?
+4. Teach the user the SOLVING STRATEGY — explain the method, not just the answer. If there's a pattern, explain the pattern so they can apply it to similar problems
+5. If answers are embedded in the code (e.g. quiz answer keys, validation checks), extract and explain them
+6. If it's an interactive app or game, explain the mechanics and winning strategy
+7. Provide the actual SOLUTIONS with step-by-step work
+8. If the content contains multiple problems, solve ALL of them
+
+Important:
+- Do NOT just summarize or give an overview. SOLVE the actual problems.
+- If you find answer patterns in the code, show them
+- If there's a formula or algorithm, explain it clearly
+- For math, show all work step by step
+- For coding challenges, provide working code with explanations
+- For quizzes/tests, provide all correct answers with reasoning
 
 Format your response as follows:
 ## [Type of Content]
@@ -197,7 +205,13 @@ Brief one-line description of what you found.
 
 ---
 
-[Your detailed solution here, using markdown headers, lists, code blocks, etc.]
+### Strategy / Patterns
+[Explain the underlying pattern, formula, or approach — teach them HOW to solve it]
+
+### Solutions
+[Detailed step-by-step solutions with final answers]
+
+If you found useful information in the source code, include a "### Code Analysis" section explaining what you found.
 
 If the content seems too vague or the page text is empty/unhelpful, explain what you see and suggest what the user could try instead.`;
 
@@ -710,14 +724,19 @@ async function solve() {
             if (!html) throw new Error('Could not fetch the page. The site may be blocking access or the URL may be invalid.');
 
             showStatus('Extracting content...');
-            content = extractContent(html, url);
+            const extracted = extractContent(html, url);
+            const sourceCode = extractSourceCode(html);
+            content = extracted;
+            if (sourceCode) {
+                content += '\n\n--- SOURCE CODE ---\n' + sourceCode;
+            }
         }
 
         if (!content || content.trim().length < 20) {
             throw new Error('Could not extract meaningful content from the page. It may require login or use heavy JavaScript rendering.');
         }
 
-        showStatus('AI is analyzing the content...');
+        showStatus('AI is analyzing content and source code...');
         const markdown = await analyzeWithGemini(content, url);
 
         // Track the request
@@ -945,6 +964,53 @@ function extractTable(table) {
         }
     });
     return result;
+}
+
+// --------------- Source Code Extraction ---------------
+function extractSourceCode(html) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const MAX_SOURCE = 10000;
+    let code = '';
+
+    // Extract inline scripts (where answers, logic, and validation often live)
+    const scripts = doc.querySelectorAll('script:not([src])');
+    scripts.forEach((script, i) => {
+        const text = script.textContent.trim();
+        // Skip empty, analytics, and tracking scripts
+        if (!text || text.length < 20) return;
+        if (text.includes('google-analytics') || text.includes('gtag') || text.includes('fbq(')) return;
+        code += `\n// --- Script ${i + 1} ---\n${text}\n`;
+    });
+
+    // Extract form elements (hidden inputs often contain answers/tokens)
+    const forms = doc.querySelectorAll('form');
+    forms.forEach(form => {
+        const hiddenInputs = form.querySelectorAll('input[type="hidden"], input[data-answer], [data-correct]');
+        hiddenInputs.forEach(input => {
+            const name = input.getAttribute('name') || input.getAttribute('id') || '';
+            const value = input.getAttribute('value') || input.getAttribute('data-answer') || input.getAttribute('data-correct') || '';
+            if (name || value) {
+                code += `\n// Hidden input: name="${name}" value="${value}"\n`;
+            }
+        });
+    });
+
+    // Extract data attributes that might contain answers
+    const dataEls = doc.querySelectorAll('[data-answer], [data-correct], [data-solution], [data-value]');
+    dataEls.forEach(el => {
+        const attrs = ['data-answer', 'data-correct', 'data-solution', 'data-value'];
+        attrs.forEach(attr => {
+            const val = el.getAttribute(attr);
+            if (val) code += `\n// ${attr}: "${val}" (element: ${el.tagName.toLowerCase()})\n`;
+        });
+    });
+
+    if (code.length > MAX_SOURCE) {
+        code = code.substring(0, MAX_SOURCE) + '\n// [Source code truncated]';
+    }
+
+    return code.trim();
 }
 
 // --------------- Gemini API (Streaming) ---------------
