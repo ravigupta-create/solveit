@@ -1,18 +1,19 @@
 /* ===== SolveIt — app.js ===== */
 
 // --------------- Constants ---------------
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const CORS_PROXIES = [
-    { name: 'allorigins', url: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
     { name: 'corsproxy',  url: (u) => `https://corsproxy.io/?${encodeURIComponent(u)}` },
+    { name: 'allorigins', url: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
 ];
 
-const MAX_CONTENT_LENGTH = 40000; // chars sent to Gemini
+const MAX_CONTENT_LENGTH = 30000; // chars sent to Gemini (optimized for free tier)
 const HISTORY_KEY = 'solveit_history';
 const API_KEY_KEY = 'solveit_api_key';
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 30;
+const PROXY_TIMEOUT_MS = 12000;
 
 const SYSTEM_PROMPT = `You are SolveIt, an expert problem solver. The user has given you the text content of a webpage. Your job is to figure out what the page is about and provide a comprehensive solution or explanation.
 
@@ -39,7 +40,14 @@ If the content seems too vague or the page text is empty/unhelpful, explain what
 // --------------- State ---------------
 const state = {
     apiKey: localStorage.getItem(API_KEY_KEY) || '',
-    history: JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'),
+    history: (() => {
+        try {
+            return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        } catch {
+            localStorage.removeItem(HISTORY_KEY);
+            return [];
+        }
+    })(),
     isAnalyzing: false,
     abortController: null,
 };
@@ -93,14 +101,8 @@ const dom = {
 
 // --------------- Initialize ---------------
 function init() {
-    // Configure marked
+    // Configure marked (no deprecated highlight option — we highlight post-render)
     marked.setOptions({
-        highlight: (code, lang) => {
-            if (lang && hljs.getLanguage(lang)) {
-                return hljs.highlight(code, { language: lang }).value;
-            }
-            return hljs.highlightAuto(code).value;
-        },
         breaks: true,
         gfm: true,
     });
@@ -158,11 +160,14 @@ function setupEventListeners() {
 
     dom.updateKeyBtn.addEventListener('click', () => {
         const key = dom.settingsApiKey.value.trim();
-        if (key.length >= 10) {
-            state.apiKey = key;
-            localStorage.setItem(API_KEY_KEY, key);
-            dom.settingsModal.classList.add('hidden');
+        if (key.length < 10) {
+            dom.settingsApiKey.style.borderColor = 'var(--error)';
+            setTimeout(() => { dom.settingsApiKey.style.borderColor = ''; }, 2000);
+            return;
         }
+        state.apiKey = key;
+        localStorage.setItem(API_KEY_KEY, key);
+        dom.settingsModal.classList.add('hidden');
     });
 
     dom.clearHistoryBtn.addEventListener('click', () => {
@@ -190,14 +195,23 @@ function setupEventListeners() {
             const text = await navigator.clipboard.readText();
             dom.urlInput.value = text;
             dom.urlInput.dispatchEvent(new Event('input'));
+            dom.urlInput.focus();
         } catch {
-            // Clipboard API not available
+            dom.urlInput.setAttribute('placeholder', 'Clipboard access denied — paste manually (Ctrl+V)');
+            setTimeout(() => {
+                dom.urlInput.setAttribute('placeholder', 'Paste any website URL here...');
+            }, 3000);
         }
     });
 
     // Solve button
     dom.solveBtn.addEventListener('click', () => {
-        if (!state.isAnalyzing) solve();
+        if (state.isAnalyzing) {
+            // Cancel in-progress analysis
+            if (state.abortController) state.abortController.abort();
+        } else {
+            solve();
+        }
     });
 
     // Copy result
@@ -206,7 +220,11 @@ function setupEventListeners() {
         navigator.clipboard.writeText(text).then(() => {
             const fb = dom.copyResultBtn.querySelector('.copy-feedback');
             fb.classList.remove('hidden');
-            setTimeout(() => fb.classList.add('hidden'), 1500);
+            fb.style.animation = 'none';
+            fb.offsetHeight; // trigger reflow
+            fb.style.animation = '';
+            clearTimeout(fb._timeout);
+            fb._timeout = setTimeout(() => fb.classList.add('hidden'), 1500);
         });
     });
 
@@ -255,7 +273,7 @@ async function solve() {
     try {
         // 1. Fetch the URL content
         const html = await fetchUrl(url, state.abortController.signal);
-        if (!html) throw new Error('Could not fetch the page. The site may be blocking access.');
+        if (!html) throw new Error('Could not fetch the page. The site may be blocking access or the URL may be invalid.');
 
         // 2. Extract text
         showStatus('Extracting content...');
@@ -266,14 +284,17 @@ async function solve() {
 
         // 3. Analyze with Gemini (streaming)
         showStatus('AI is analyzing the content...');
-        await analyzeWithGemini(content, url);
+        const markdown = await analyzeWithGemini(content, url);
 
-        // 4. Save to history
-        const solutionText = dom.resultsBody.innerHTML;
-        addToHistory(url, solutionText);
+        // 4. Save to history (store raw markdown, not HTML)
+        addToHistory(url, markdown);
 
     } catch (err) {
-        if (err.name === 'AbortError') return;
+        if (err.name === 'AbortError') {
+            showStatus('Cancelled.');
+            setTimeout(hideStatus, 1500);
+            return;
+        }
         showError(getErrorTitle(err), err.message);
     } finally {
         state.isAnalyzing = false;
@@ -288,15 +309,36 @@ async function fetchUrl(url, signal) {
     for (const proxy of CORS_PROXIES) {
         try {
             const proxyUrl = proxy.url(url);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+
+            // Link parent abort signal to per-proxy controller
+            const onAbort = () => controller.abort();
+            if (signal) signal.addEventListener('abort', onAbort);
+
             const resp = await fetch(proxyUrl, {
-                signal,
+                signal: controller.signal,
                 headers: { 'Accept': 'text/html,application/xhtml+xml,*/*' },
             });
+            clearTimeout(timeout);
+            if (signal) signal.removeEventListener('abort', onAbort);
+
             if (!resp.ok) continue;
+
+            // Check content type — reject non-text
+            const contentType = resp.headers.get('content-type') || '';
+            if (contentType.includes('application/pdf')) {
+                throw new Error('PDF files are not supported. Please paste a webpage URL instead, or copy the text content from the PDF.');
+            }
+            if (contentType.includes('image/')) {
+                throw new Error('Image URLs are not supported. Please paste a webpage URL instead.');
+            }
+
             const text = await resp.text();
             if (text && text.length > 50) return text;
         } catch (e) {
-            if (e.name === 'AbortError') throw e;
+            if (e.name === 'AbortError' && signal?.aborted) throw e;
+            if (e.message.includes('not supported')) throw e; // Re-throw content type errors
             continue;
         }
     }
@@ -308,12 +350,15 @@ function extractContent(html, url) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
-    // Remove unwanted elements
-    const remove = ['script', 'style', 'noscript', 'iframe', 'svg', 'nav', 'footer',
-                     'header', '.sidebar', '.nav', '.menu', '.cookie', '.popup', '.modal',
-                     '.advertisement', '.ad', '[role="banner"]', '[role="navigation"]'];
-    remove.forEach(sel => {
-        doc.querySelectorAll(sel).forEach(el => el.remove());
+    // Remove unwanted elements (be selective — only top-level nav/header/footer)
+    const removeSelectors = [
+        'script', 'style', 'noscript', 'iframe',
+        'body > nav', 'body > header', 'body > footer',
+        '.sidebar', '.nav', '.menu', '.cookie', '.popup', '.modal',
+        '.advertisement', '.ad', '[role="banner"]', '[role="navigation"]',
+    ];
+    removeSelectors.forEach(sel => {
+        try { doc.querySelectorAll(sel).forEach(el => el.remove()); } catch { /* invalid selector */ }
     });
 
     // Try to get main content first
@@ -351,16 +396,17 @@ function extractContent(html, url) {
                     result += `\n- ${child.textContent.trim()}`;
                 } else if (tag === 'br') {
                     result += '\n';
-                } else if (tag === 'pre' || tag === 'code') {
+                } else if (tag === 'pre') {
                     result += `\n\`\`\`\n${child.textContent}\n\`\`\`\n`;
+                } else if (tag === 'code' && child.parentElement?.tagName !== 'PRE') {
+                    // Inline code only (skip code inside pre — already handled)
+                    result += `\`${child.textContent}\``;
                 } else if (tag === 'img') {
                     const alt = child.getAttribute('alt');
-                    if (alt) result += `[Image: ${alt}] `;
+                    if (alt && alt.length < 200) result += `[Image: ${alt.substring(0, 100)}] `;
                 } else if (tag === 'a') {
-                    const href = child.getAttribute('href');
                     const t = child.textContent.trim();
-                    if (t && href) result += `${t} (${href}) `;
-                    else if (t) result += t + ' ';
+                    if (t) result += t + ' ';
                 } else if (tag === 'table') {
                     result += '\n' + extractTable(child) + '\n';
                 } else {
@@ -387,10 +433,14 @@ function extractContent(html, url) {
 function extractTable(table) {
     let result = '';
     const rows = table.querySelectorAll('tr');
-    rows.forEach(row => {
+    rows.forEach((row, i) => {
         const cells = row.querySelectorAll('th, td');
         const cellTexts = Array.from(cells).map(c => c.textContent.trim());
         result += '| ' + cellTexts.join(' | ') + ' |\n';
+        // Add separator after header row
+        if (i === 0) {
+            result += '| ' + cellTexts.map(() => '---').join(' | ') + ' |\n';
+        }
     });
     return result;
 }
@@ -412,10 +462,10 @@ async function analyzeWithGemini(content, url) {
                 maxOutputTokens: 8192,
             },
             safetySettings: [
-                { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-                { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-                { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-                { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+                { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
             ],
         }),
     });
@@ -426,7 +476,7 @@ async function analyzeWithGemini(content, url) {
             throw new Error('Invalid API key. Please check your Gemini API key in Settings.');
         }
         if (resp.status === 429) {
-            throw new Error('Rate limit reached. The free tier allows 15 requests per minute. Please wait a moment and try again.');
+            throw new Error('Rate limit reached. The free Gemini tier allows about 10 requests per minute and 250\u2013500 per day. Please wait a moment and try again.');
         }
         if (resp.status === 403) {
             throw new Error('API key does not have access. Make sure you enabled the Generative Language API in Google Cloud Console.');
@@ -440,9 +490,24 @@ async function analyzeWithGemini(content, url) {
     dom.resultsBody.classList.add('streaming-cursor');
 
     let fullText = '';
+    let renderScheduled = false;
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+
+    // Throttled render via requestAnimationFrame
+    const scheduleRender = () => {
+        if (renderScheduled) return;
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+            dom.resultsBody.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
+            dom.resultsBody.querySelectorAll('pre code:not(.hljs)').forEach(block => {
+                hljs.highlightElement(block);
+            });
+            window.scrollTo(0, document.body.scrollHeight);
+            renderScheduled = false;
+        });
+    };
 
     while (true) {
         const { done, value } = await reader.read();
@@ -462,13 +527,7 @@ async function analyzeWithGemini(content, url) {
                 const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (text) {
                     fullText += text;
-                    dom.resultsBody.innerHTML = marked.parse(fullText);
-                    // Apply syntax highlighting to new code blocks
-                    dom.resultsBody.querySelectorAll('pre code:not(.hljs)').forEach(block => {
-                        hljs.highlightElement(block);
-                    });
-                    // Scroll to bottom during streaming
-                    dom.resultsBody.scrollTop = dom.resultsBody.scrollHeight;
+                    scheduleRender();
                 }
             } catch {
                 // Skip malformed JSON chunks
@@ -476,30 +535,53 @@ async function analyzeWithGemini(content, url) {
         }
     }
 
+    // Final render to ensure everything is displayed
+    dom.resultsBody.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
+    dom.resultsBody.querySelectorAll('pre code:not(.hljs)').forEach(block => {
+        hljs.highlightElement(block);
+    });
     dom.resultsBody.classList.remove('streaming-cursor');
 
     if (!fullText) {
         throw new Error('The AI did not return a response. The content may have been blocked by safety filters.');
     }
+
+    return fullText; // Return raw markdown for history storage
 }
 
 // --------------- History ---------------
-function addToHistory(url, solutionHtml) {
+function addToHistory(url, markdown) {
     const entry = {
         id: Date.now(),
         url,
-        solutionHtml,
+        markdown, // Store raw markdown, re-render on load (safer + smaller)
         timestamp: new Date().toISOString(),
     };
     state.history.unshift(entry);
     if (state.history.length > MAX_HISTORY) state.history.pop();
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+
+    try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+    } catch {
+        // localStorage quota exceeded — trim oldest entries until it fits
+        while (state.history.length > 1) {
+            state.history.pop();
+            try {
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+                break;
+            } catch {
+                continue;
+            }
+        }
+    }
     renderHistory();
 }
 
 function deleteHistoryItem(id) {
     state.history = state.history.filter(h => h.id !== id);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+    try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+    } catch { /* ignore */ }
     renderHistory();
 }
 
@@ -547,8 +629,14 @@ function loadHistoryItem(item) {
     dom.urlInput.value = item.url;
     dom.solveBtn.disabled = false;
     showResults(item.url);
-    dom.resultsBody.innerHTML = item.solutionHtml;
-    // Re-highlight code blocks
+
+    // Re-render from markdown (or legacy HTML) with DOMPurify sanitization
+    const content = item.markdown || item.solutionHtml || '';
+    if (item.markdown) {
+        dom.resultsBody.innerHTML = DOMPurify.sanitize(marked.parse(content));
+    } else {
+        dom.resultsBody.innerHTML = DOMPurify.sanitize(content);
+    }
     dom.resultsBody.querySelectorAll('pre code:not(.hljs)').forEach(block => {
         hljs.highlightElement(block);
     });
@@ -560,13 +648,15 @@ function setLoading(loading) {
         dom.solveBtnText.classList.add('hidden');
         dom.solveBtnArrow.classList.add('hidden');
         dom.solveBtnLoading.classList.remove('hidden');
-        dom.solveBtn.disabled = true;
+        dom.solveBtn.disabled = false; // Keep enabled for cancel
+        dom.solveBtn.classList.add('is-cancellable');
         dom.urlInput.disabled = true;
     } else {
         dom.solveBtnText.classList.remove('hidden');
         dom.solveBtnArrow.classList.remove('hidden');
         dom.solveBtnLoading.classList.add('hidden');
         dom.solveBtn.disabled = !isValidUrl(dom.urlInput.value.trim());
+        dom.solveBtn.classList.remove('is-cancellable');
         dom.urlInput.disabled = false;
     }
 }
@@ -615,6 +705,7 @@ function resetToInput() {
 function openHistory() {
     dom.historySidebar.classList.remove('hidden');
     dom.sidebarOverlay.classList.remove('hidden');
+    dom.closeHistory.focus();
 }
 
 function closeHistory() {
@@ -630,16 +721,26 @@ function toggleVis(input) {
 function isValidUrl(str) {
     try {
         const u = new URL(str);
-        return u.protocol === 'http:' || u.protocol === 'https:';
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+        // Block private/internal addresses
+        const hostname = u.hostname.toLowerCase();
+        if (hostname === 'localhost' ||
+            hostname.startsWith('127.') ||
+            hostname.startsWith('10.') ||
+            hostname.startsWith('192.168.') ||
+            hostname === '0.0.0.0' ||
+            hostname.endsWith('.local') ||
+            hostname.endsWith('.internal')) {
+            return false;
+        }
+        return true;
     } catch {
         return false;
     }
 }
 
 function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function formatTime(iso) {
@@ -663,6 +764,7 @@ function getErrorTitle(err) {
     if (msg.includes('rate limit')) return 'Rate Limited';
     if (msg.includes('fetch') || msg.includes('blocking')) return 'Could Not Fetch Page';
     if (msg.includes('extract')) return 'Content Extraction Failed';
+    if (msg.includes('not supported')) return 'Unsupported Content';
     return 'Something Went Wrong';
 }
 
