@@ -275,14 +275,13 @@ const dom = {
     setupModal:       $('#setupModal'),
     apiKeyInput:      $('#apiKeyInput'),
     saveKeyBtn:       $('#saveKeyBtn'),
-    toggleKeyVis:     $('#toggleKeyVis'),
     // Settings
     settingsModal:    $('#settingsModal'),
     settingsToggle:   $('#settingsToggle'),
     closeSettings:    $('#closeSettings'),
     settingsApiKey:   $('#settingsApiKey'),
-    toggleSettingsVis:$('#toggleSettingsKeyVis'),
     updateKeyBtn:     $('#updateKeyBtn'),
+    changeKeyBtn:     $('#changeKeyBtn'),
     clearHistoryBtn:  $('#clearHistoryBtn'),
     customProxyInput: $('#customProxyInput'),
     saveProxyBtn:     $('#saveProxyBtn'),
@@ -363,9 +362,12 @@ function setupEventListeners() {
         }
     });
 
-    // Toggle key visibility
-    dom.toggleKeyVis.addEventListener('click', () => toggleVis(dom.apiKeyInput));
-    dom.toggleSettingsVis.addEventListener('click', () => toggleVis(dom.settingsApiKey));
+    // Change API Key button (header)
+    dom.changeKeyBtn.addEventListener('click', () => {
+        dom.setupModal.classList.remove('hidden');
+        dom.apiKeyInput.value = state.apiKey;
+        dom.saveKeyBtn.disabled = !state.apiKey || state.apiKey.length < 10;
+    });
 
     // Settings
     dom.settingsToggle.addEventListener('click', () => {
@@ -958,10 +960,6 @@ function openHistory() {
 function closeHistory() {
     dom.historySidebar.classList.add('hidden');
     dom.sidebarOverlay.classList.add('hidden');
-}
-
-function toggleVis(input) {
-    input.type = input.type === 'password' ? 'text' : 'password';
 }
 
 // --------------- Utilities ---------------
