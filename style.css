@@ -865,6 +865,104 @@ a:hover {
     margin-right: auto;
 }
 
+/* ===== Rate Limit Badge ===== */
+.rate-limit-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.rate-limit-badge svg {
+    color: var(--accent);
+}
+
+.rate-limit-max {
+    color: var(--text-tertiary);
+}
+
+.rate-limit-badge.warn {
+    border-color: rgba(255, 171, 64, 0.4);
+    color: var(--warning);
+}
+
+.rate-limit-badge.warn svg {
+    color: var(--warning);
+}
+
+/* ===== Model Selector ===== */
+.model-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.model-option {
+    cursor: pointer;
+}
+
+.model-option input {
+    display: none;
+}
+
+.model-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+}
+
+.model-option input:checked + .model-card {
+    border-color: var(--gradient-start);
+    background: rgba(102, 126, 234, 0.08);
+}
+
+.model-card strong {
+    font-size: 0.9rem;
+}
+
+.model-detail {
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+}
+
+.modal-settings {
+    max-width: 480px;
+}
+
+/* ===== Settings Extras ===== */
+.setting-desc-inline {
+    margin-bottom: 10px;
+}
+
+.setting-desc code {
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(102, 126, 234, 0.1);
+    color: var(--accent);
+    font-family: 'SF Mono', monospace;
+    font-size: 0.82em;
+}
+
+.setting-btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.setting-group .key-input:only-of-type {
+    margin-bottom: 0;
+}
+
 /* ===== Settings ===== */
 .setting-group {
     padding: 18px 0;

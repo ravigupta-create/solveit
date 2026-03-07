@@ -1,17 +1,23 @@
 /* ===== SolveIt — app.js ===== */
 
 // --------------- Constants ---------------
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODELS = {
+    'gemini-2.5-flash':      { label: 'Balanced', rpm: 10, rpd: 500 },
+    'gemini-2.5-flash-lite': { label: 'Fast',     rpm: 30, rpd: 1000 },
+};
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-const CORS_PROXIES = [
+const DEFAULT_CORS_PROXIES = [
     { name: 'corsproxy',  url: (u) => `https://corsproxy.io/?${encodeURIComponent(u)}` },
     { name: 'allorigins', url: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
 ];
 
-const MAX_CONTENT_LENGTH = 30000; // chars sent to Gemini (optimized for free tier)
+const MAX_CONTENT_LENGTH = 30000;
 const HISTORY_KEY = 'solveit_history';
 const API_KEY_KEY = 'solveit_api_key';
+const MODEL_KEY = 'solveit_model';
+const PROXY_KEY = 'solveit_custom_proxy';
+const RATE_KEY = 'solveit_rate';
 const MAX_HISTORY = 30;
 const PROXY_TIMEOUT_MS = 12000;
 
@@ -40,6 +46,8 @@ If the content seems too vague or the page text is empty/unhelpful, explain what
 // --------------- State ---------------
 const state = {
     apiKey: localStorage.getItem(API_KEY_KEY) || '',
+    model: localStorage.getItem(MODEL_KEY) || 'gemini-2.5-flash',
+    customProxy: localStorage.getItem(PROXY_KEY) || '',
     history: (() => {
         try {
             return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
@@ -51,6 +59,57 @@ const state = {
     isAnalyzing: false,
     abortController: null,
 };
+
+// --------------- Rate Limit Tracking ---------------
+function getRateData() {
+    try {
+        const data = JSON.parse(localStorage.getItem(RATE_KEY) || '{}');
+        const today = new Date().toISOString().slice(0, 10);
+        if (data.date !== today) return { date: today, count: 0 };
+        return data;
+    } catch {
+        return { date: new Date().toISOString().slice(0, 10), count: 0 };
+    }
+}
+
+function recordRequest() {
+    const data = getRateData();
+    data.count++;
+    try { localStorage.setItem(RATE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+    updateRateBadge();
+}
+
+function updateRateBadge() {
+    const data = getRateData();
+    const modelInfo = GEMINI_MODELS[state.model];
+    const maxDaily = modelInfo ? modelInfo.rpd : 500;
+    const countEl = document.getElementById('rateLimitCount');
+    const badge = document.getElementById('rateLimitBadge');
+    const maxEl = badge.querySelector('.rate-limit-max');
+    if (countEl) countEl.textContent = data.count;
+    if (maxEl) maxEl.textContent = `/${maxDaily}`;
+    // Warn when approaching limit
+    if (data.count >= maxDaily * 0.8) {
+        badge.classList.add('warn');
+    } else {
+        badge.classList.remove('warn');
+    }
+}
+
+// --------------- CORS Proxies ---------------
+function getCorsProxies() {
+    const proxies = [];
+    // Custom proxy takes priority
+    if (state.customProxy) {
+        proxies.push({
+            name: 'custom',
+            url: (u) => `${state.customProxy.replace(/\/$/, '')}/?url=${encodeURIComponent(u)}`,
+        });
+    }
+    // Add default fallbacks
+    proxies.push(...DEFAULT_CORS_PROXIES);
+    return proxies;
+}
 
 // --------------- DOM References ---------------
 const $ = (sel) => document.querySelector(sel);
@@ -68,6 +127,9 @@ const dom = {
     toggleSettingsVis:$('#toggleSettingsKeyVis'),
     updateKeyBtn:     $('#updateKeyBtn'),
     clearHistoryBtn:  $('#clearHistoryBtn'),
+    customProxyInput: $('#customProxyInput'),
+    saveProxyBtn:     $('#saveProxyBtn'),
+    clearProxyBtn:    $('#clearProxyBtn'),
     // Main
     mainContent:      $('#mainContent'),
     urlInput:         $('#urlInput'),
@@ -114,6 +176,7 @@ function init() {
         dom.setupModal.classList.add('hidden');
     }
 
+    updateRateBadge();
     renderHistory();
     setupEventListeners();
 }
@@ -147,6 +210,10 @@ function setupEventListeners() {
     // Settings
     dom.settingsToggle.addEventListener('click', () => {
         dom.settingsApiKey.value = state.apiKey;
+        dom.customProxyInput.value = state.customProxy;
+        // Set model radio
+        const radio = document.querySelector(`input[name="model"][value="${state.model}"]`);
+        if (radio) radio.checked = true;
         dom.settingsModal.classList.remove('hidden');
     });
 
@@ -168,6 +235,34 @@ function setupEventListeners() {
         state.apiKey = key;
         localStorage.setItem(API_KEY_KEY, key);
         dom.settingsModal.classList.add('hidden');
+    });
+
+    // Model selection
+    document.querySelectorAll('input[name="model"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            state.model = radio.value;
+            localStorage.setItem(MODEL_KEY, state.model);
+            updateRateBadge();
+        });
+    });
+
+    // Custom proxy
+    dom.saveProxyBtn.addEventListener('click', () => {
+        const proxy = dom.customProxyInput.value.trim();
+        if (proxy && !proxy.startsWith('http')) {
+            dom.customProxyInput.style.borderColor = 'var(--error)';
+            setTimeout(() => { dom.customProxyInput.style.borderColor = ''; }, 2000);
+            return;
+        }
+        state.customProxy = proxy;
+        localStorage.setItem(PROXY_KEY, proxy);
+        dom.settingsModal.classList.add('hidden');
+    });
+
+    dom.clearProxyBtn.addEventListener('click', () => {
+        state.customProxy = '';
+        localStorage.removeItem(PROXY_KEY);
+        dom.customProxyInput.value = '';
     });
 
     dom.clearHistoryBtn.addEventListener('click', () => {
@@ -207,7 +302,6 @@ function setupEventListeners() {
     // Solve button
     dom.solveBtn.addEventListener('click', () => {
         if (state.isAnalyzing) {
-            // Cancel in-progress analysis
             if (state.abortController) state.abortController.abort();
         } else {
             solve();
@@ -221,7 +315,7 @@ function setupEventListeners() {
             const fb = dom.copyResultBtn.querySelector('.copy-feedback');
             fb.classList.remove('hidden');
             fb.style.animation = 'none';
-            fb.offsetHeight; // trigger reflow
+            fb.offsetHeight;
             fb.style.animation = '';
             clearTimeout(fb._timeout);
             fb._timeout = setTimeout(() => fb.classList.add('hidden'), 1500);
@@ -242,7 +336,7 @@ function setupEventListeners() {
     dom.closeHistory.addEventListener('click', closeHistory);
     dom.sidebarOverlay.addEventListener('click', closeHistory);
 
-    // Keyboard shortcut: Escape closes modals/sidebar
+    // Escape closes modals/sidebar
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             if (!dom.historySidebar.classList.contains('hidden')) closeHistory();
@@ -256,9 +350,16 @@ async function solve() {
     const url = dom.urlInput.value.trim();
     if (!isValidUrl(url) || state.isAnalyzing) return;
 
-    // Check API key
     if (!state.apiKey) {
         dom.setupModal.classList.remove('hidden');
+        return;
+    }
+
+    // Check daily rate limit
+    const rateData = getRateData();
+    const modelInfo = GEMINI_MODELS[state.model];
+    if (rateData.count >= (modelInfo?.rpd || 500)) {
+        showError('Daily Limit Reached', `You've used all ${modelInfo.rpd} free requests for today. Try switching to the "${state.model === 'gemini-2.5-flash' ? 'Fast' : 'Balanced'}" model in Settings for a different limit, or wait until tomorrow.`);
         return;
     }
 
@@ -271,22 +372,21 @@ async function solve() {
     hideResults();
 
     try {
-        // 1. Fetch the URL content
         const html = await fetchUrl(url, state.abortController.signal);
         if (!html) throw new Error('Could not fetch the page. The site may be blocking access or the URL may be invalid.');
 
-        // 2. Extract text
         showStatus('Extracting content...');
         const content = extractContent(html, url);
         if (!content || content.trim().length < 20) {
             throw new Error('Could not extract meaningful content from the page. It may require login or use heavy JavaScript rendering.');
         }
 
-        // 3. Analyze with Gemini (streaming)
         showStatus('AI is analyzing the content...');
         const markdown = await analyzeWithGemini(content, url);
 
-        // 4. Save to history (store raw markdown, not HTML)
+        // Track the request
+        recordRequest();
+
         addToHistory(url, markdown);
 
     } catch (err) {
@@ -306,13 +406,14 @@ async function solve() {
 
 // --------------- Fetch URL ---------------
 async function fetchUrl(url, signal) {
-    for (const proxy of CORS_PROXIES) {
+    const proxies = getCorsProxies();
+
+    for (const proxy of proxies) {
         try {
             const proxyUrl = proxy.url(url);
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
 
-            // Link parent abort signal to per-proxy controller
             const onAbort = () => controller.abort();
             if (signal) signal.addEventListener('abort', onAbort);
 
@@ -325,7 +426,6 @@ async function fetchUrl(url, signal) {
 
             if (!resp.ok) continue;
 
-            // Check content type — reject non-text
             const contentType = resp.headers.get('content-type') || '';
             if (contentType.includes('application/pdf')) {
                 throw new Error('PDF files are not supported. Please paste a webpage URL instead, or copy the text content from the PDF.');
@@ -338,7 +438,7 @@ async function fetchUrl(url, signal) {
             if (text && text.length > 50) return text;
         } catch (e) {
             if (e.name === 'AbortError' && signal?.aborted) throw e;
-            if (e.message.includes('not supported')) throw e; // Re-throw content type errors
+            if (e.message.includes('not supported')) throw e;
             continue;
         }
     }
@@ -350,7 +450,6 @@ function extractContent(html, url) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
-    // Remove unwanted elements (be selective — only top-level nav/header/footer)
     const removeSelectors = [
         'script', 'style', 'noscript', 'iframe',
         'body > nav', 'body > header', 'body > footer',
@@ -361,7 +460,6 @@ function extractContent(html, url) {
         try { doc.querySelectorAll(sel).forEach(el => el.remove()); } catch { /* invalid selector */ }
     });
 
-    // Try to get main content first
     const mainSelectors = ['main', 'article', '[role="main"]', '.content', '.post', '.entry', '#content', '#main'];
     let mainEl = null;
     for (const sel of mainSelectors) {
@@ -373,20 +471,18 @@ function extractContent(html, url) {
     const source = mainEl || doc.body;
     if (!source) return '';
 
-    // Extract text with some structure
     let text = '';
     const title = doc.querySelector('title');
     if (title) text += `Page Title: ${title.textContent.trim()}\n\n`;
 
-    // Walk through elements and preserve structure
     const walk = (node) => {
         if (!node) return '';
         let result = '';
         for (const child of node.childNodes) {
-            if (child.nodeType === 3) { // Text node
+            if (child.nodeType === 3) {
                 const t = child.textContent.trim();
                 if (t) result += t + ' ';
-            } else if (child.nodeType === 1) { // Element
+            } else if (child.nodeType === 1) {
                 const tag = child.tagName.toLowerCase();
                 if (['h1','h2','h3','h4','h5','h6'].includes(tag)) {
                     result += `\n\n### ${child.textContent.trim()}\n`;
@@ -399,7 +495,6 @@ function extractContent(html, url) {
                 } else if (tag === 'pre') {
                     result += `\n\`\`\`\n${child.textContent}\n\`\`\`\n`;
                 } else if (tag === 'code' && child.parentElement?.tagName !== 'PRE') {
-                    // Inline code only (skip code inside pre — already handled)
                     result += `\`${child.textContent}\``;
                 } else if (tag === 'img') {
                     const alt = child.getAttribute('alt');
@@ -418,11 +513,8 @@ function extractContent(html, url) {
     };
 
     text += walk(source);
-
-    // Clean up
     text = text.replace(/\n{3,}/g, '\n\n').trim();
 
-    // Truncate if too long
     if (text.length > MAX_CONTENT_LENGTH) {
         text = text.substring(0, MAX_CONTENT_LENGTH) + '\n\n[Content truncated due to length]';
     }
@@ -437,7 +529,6 @@ function extractTable(table) {
         const cells = row.querySelectorAll('th, td');
         const cellTexts = Array.from(cells).map(c => c.textContent.trim());
         result += '| ' + cellTexts.join(' | ') + ' |\n';
-        // Add separator after header row
         if (i === 0) {
             result += '| ' + cellTexts.map(() => '---').join(' | ') + ' |\n';
         }
@@ -449,7 +540,7 @@ function extractTable(table) {
 async function analyzeWithGemini(content, url) {
     const prompt = `${SYSTEM_PROMPT}\n\n---\nURL: ${url}\n\nPage Content:\n${content}`;
 
-    const apiUrl = `${GEMINI_API_BASE}/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${state.apiKey}`;
+    const apiUrl = `${GEMINI_API_BASE}/${state.model}:streamGenerateContent?alt=sse&key=${state.apiKey}`;
 
     const resp = await fetch(apiUrl, {
         method: 'POST',
@@ -476,7 +567,8 @@ async function analyzeWithGemini(content, url) {
             throw new Error('Invalid API key. Please check your Gemini API key in Settings.');
         }
         if (resp.status === 429) {
-            throw new Error('Rate limit reached. The free Gemini tier allows about 10 requests per minute and 250\u2013500 per day. Please wait a moment and try again.');
+            const modelInfo = GEMINI_MODELS[state.model];
+            throw new Error(`Rate limit reached. The free tier allows about ${modelInfo?.rpm || 10} requests per minute and ${modelInfo?.rpd || 500} per day. Please wait a moment and try again.`);
         }
         if (resp.status === 403) {
             throw new Error('API key does not have access. Make sure you enabled the Generative Language API in Google Cloud Console.');
@@ -484,7 +576,6 @@ async function analyzeWithGemini(content, url) {
         throw new Error(`Gemini API returned status ${resp.status}. Please try again.`);
     }
 
-    // Show results area and stream into it
     showResults(url);
     dom.resultsBody.innerHTML = '';
     dom.resultsBody.classList.add('streaming-cursor');
@@ -495,7 +586,6 @@ async function analyzeWithGemini(content, url) {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    // Throttled render via requestAnimationFrame
     const scheduleRender = () => {
         if (renderScheduled) return;
         renderScheduled = true;
@@ -535,7 +625,7 @@ async function analyzeWithGemini(content, url) {
         }
     }
 
-    // Final render to ensure everything is displayed
+    // Final render
     dom.resultsBody.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
     dom.resultsBody.querySelectorAll('pre code:not(.hljs)').forEach(block => {
         hljs.highlightElement(block);
@@ -546,7 +636,7 @@ async function analyzeWithGemini(content, url) {
         throw new Error('The AI did not return a response. The content may have been blocked by safety filters.');
     }
 
-    return fullText; // Return raw markdown for history storage
+    return fullText;
 }
 
 // --------------- History ---------------
@@ -554,7 +644,7 @@ function addToHistory(url, markdown) {
     const entry = {
         id: Date.now(),
         url,
-        markdown, // Store raw markdown, re-render on load (safer + smaller)
+        markdown,
         timestamp: new Date().toISOString(),
     };
     state.history.unshift(entry);
@@ -563,7 +653,6 @@ function addToHistory(url, markdown) {
     try {
         localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
     } catch {
-        // localStorage quota exceeded — trim oldest entries until it fits
         while (state.history.length > 1) {
             state.history.pop();
             try {
@@ -606,7 +695,6 @@ function renderHistory() {
             </div>`;
     }).join('');
 
-    // Attach click handlers
     dom.historyList.querySelectorAll('.history-item').forEach(el => {
         el.addEventListener('click', (e) => {
             if (e.target.closest('.history-delete')) return;
@@ -630,7 +718,6 @@ function loadHistoryItem(item) {
     dom.solveBtn.disabled = false;
     showResults(item.url);
 
-    // Re-render from markdown (or legacy HTML) with DOMPurify sanitization
     const content = item.markdown || item.solutionHtml || '';
     if (item.markdown) {
         dom.resultsBody.innerHTML = DOMPurify.sanitize(marked.parse(content));
@@ -648,7 +735,7 @@ function setLoading(loading) {
         dom.solveBtnText.classList.add('hidden');
         dom.solveBtnArrow.classList.add('hidden');
         dom.solveBtnLoading.classList.remove('hidden');
-        dom.solveBtn.disabled = false; // Keep enabled for cancel
+        dom.solveBtn.disabled = false;
         dom.solveBtn.classList.add('is-cancellable');
         dom.urlInput.disabled = true;
     } else {
@@ -722,7 +809,6 @@ function isValidUrl(str) {
     try {
         const u = new URL(str);
         if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-        // Block private/internal addresses
         const hostname = u.hostname.toLowerCase();
         if (hostname === 'localhost' ||
             hostname.startsWith('127.') ||
@@ -761,7 +847,7 @@ function formatTime(iso) {
 function getErrorTitle(err) {
     const msg = err.message.toLowerCase();
     if (msg.includes('api key')) return 'API Key Issue';
-    if (msg.includes('rate limit')) return 'Rate Limited';
+    if (msg.includes('rate limit') || msg.includes('daily limit')) return 'Rate Limited';
     if (msg.includes('fetch') || msg.includes('blocking')) return 'Could Not Fetch Page';
     if (msg.includes('extract')) return 'Content Extraction Failed';
     if (msg.includes('not supported')) return 'Unsupported Content';

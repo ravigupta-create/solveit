@@ -7,12 +7,12 @@
     <meta name="description" content="Paste any website link and get instant solutions, explanations, and answers. Powered by AI. 100% Free.">
     <meta name="referrer" content="no-referrer">
     <meta name="theme-color" content="#07070f">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src https://fonts.gstatic.com; connect-src https://generativelanguage.googleapis.com https://api.allorigins.win https://corsproxy.io; img-src 'self' data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://generativelanguage.googleapis.com https://api.allorigins.win https://corsproxy.io https://*.workers.dev; img-src 'self' data:;">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1f9e0;</text></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <link rel="stylesheet" href="lib/atom-one-dark.min.css">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -24,6 +24,10 @@
                 <span class="logo-text">SolveIt</span>
             </div>
             <nav class="header-nav">
+                <div class="rate-limit-badge" id="rateLimitBadge" title="Requests used today">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    <span id="rateLimitCount">0</span><span class="rate-limit-max">/500</span>
+                </div>
                 <button class="nav-btn" id="historyToggle" title="History" aria-label="Open history">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     <span>History</span>
@@ -49,7 +53,7 @@
                         <span class="step-number">1</span>
                         <div class="step-content">
                             <h3>Get a Free API Key</h3>
-                            <p>Visit <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> and click <strong>"Create API Key"</strong>. It's instant and completely free.</p>
+                            <p>Visit <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> and click <strong>"Create API Key"</strong>. It's instant and completely free — no credit card needed, you will never be charged.</p>
                         </div>
                     </div>
                     <div class="setup-step">
@@ -83,7 +87,7 @@
 
     <!-- Settings Modal -->
     <div class="modal-overlay hidden" id="settingsModal">
-        <div class="modal modal-sm">
+        <div class="modal modal-settings">
             <div class="modal-header">
                 <h2>Settings</h2>
                 <button class="modal-close" id="closeSettings" aria-label="Close settings">&times;</button>
@@ -100,12 +104,41 @@
                     <button class="btn-secondary btn-sm" id="updateKeyBtn">Update Key</button>
                 </div>
                 <div class="setting-group">
+                    <label class="setting-label">AI Model</label>
+                    <p class="setting-desc setting-desc-inline">Choose based on your usage. Both are 100% free.</p>
+                    <div class="model-selector">
+                        <label class="model-option">
+                            <input type="radio" name="model" value="gemini-2.5-flash" checked>
+                            <div class="model-card">
+                                <strong>Balanced</strong>
+                                <span class="model-detail">Gemini 2.5 Flash — smarter, 10 req/min</span>
+                            </div>
+                        </label>
+                        <label class="model-option">
+                            <input type="radio" name="model" value="gemini-2.5-flash-lite">
+                            <div class="model-card">
+                                <strong>Fast</strong>
+                                <span class="model-detail">Flash-Lite — faster, 30 req/min, 2x daily limit</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label">Custom CORS Proxy (Optional)</label>
+                    <p class="setting-desc setting-desc-inline">Deploy your own free Cloudflare Worker for maximum reliability. See <code>worker/cors-proxy.js</code> in the repo.</p>
+                    <input type="url" id="customProxyInput" class="key-input" placeholder="https://your-proxy.workers.dev" autocomplete="off">
+                    <div class="setting-btn-row">
+                        <button class="btn-secondary btn-sm" id="saveProxyBtn">Save Proxy</button>
+                        <button class="btn-danger btn-sm" id="clearProxyBtn">Clear</button>
+                    </div>
+                </div>
+                <div class="setting-group">
                     <label class="setting-label">History</label>
                     <button class="btn-danger btn-sm" id="clearHistoryBtn">Clear All History</button>
                 </div>
                 <div class="setting-group">
                     <label class="setting-label">About</label>
-                    <p class="setting-desc">SolveIt is 100% free and open source. Your API key and data never leave your browser — all calls go directly to Google's Gemini API. URLs are fetched through CORS proxies to bypass browser restrictions.</p>
+                    <p class="setting-desc">SolveIt is 100% free and open source. Your API key and data never leave your browser — all calls go directly to Google's Gemini API. No credit card is ever needed and you will never be charged.</p>
                 </div>
             </div>
         </div>
@@ -206,10 +239,10 @@
         <p>100% Free &amp; Open Source &mdash; Your data never leaves your browser</p>
     </footer>
 
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- Scripts (self-hosted — no CDN dependency) -->
+    <script src="lib/purify.min.js"></script>
+    <script src="lib/marked.min.js"></script>
+    <script src="lib/highlight.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
