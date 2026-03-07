@@ -24,7 +24,8 @@ async function hashPassword(password) {
 }
 
 function isAuthenticated() {
-    return sessionStorage.getItem(AUTH_SESSION_KEY) === 'true';
+    // Never persist — always require password on every page load
+    return false;
 }
 
 function getLockoutState() {
@@ -101,7 +102,7 @@ function setupAuth() {
         const hash = await hashPassword(password);
         if (hash === AUTH_HASH) {
             // Success
-            sessionStorage.setItem(AUTH_SESSION_KEY, 'true');
+            // Don't persist auth — password required every reload
             saveLockoutState({ attempts: 0, lockedUntil: 0 });
             overlay.style.animation = 'fadeOut 0.3s ease forwards';
             setTimeout(unlockApp, 300);
@@ -201,7 +202,7 @@ If the content seems too vague or the page text is empty/unhelpful, explain what
 
 // --------------- State ---------------
 const state = {
-    apiKey: localStorage.getItem(API_KEY_KEY) || '',
+    apiKey: sessionStorage.getItem(API_KEY_KEY) || '',
     model: localStorage.getItem(MODEL_KEY) || 'gemini-2.5-flash',
     customProxy: localStorage.getItem(PROXY_KEY) || '',
     history: (() => {
@@ -325,7 +326,10 @@ function init() {
         gfm: true,
     });
 
-    // Show setup if no key
+    // Clear any old persisted API key from localStorage (now session-only)
+    localStorage.removeItem(API_KEY_KEY);
+
+    // Always show setup modal on fresh page load so user can enter/re-enter key
     if (!state.apiKey) {
         dom.setupModal.classList.remove('hidden');
     } else {
@@ -348,7 +352,7 @@ function setupEventListeners() {
         const key = dom.apiKeyInput.value.trim();
         if (key) {
             state.apiKey = key;
-            localStorage.setItem(API_KEY_KEY, key);
+            sessionStorage.setItem(API_KEY_KEY, key);
             dom.setupModal.classList.add('hidden');
         }
     });
@@ -389,7 +393,7 @@ function setupEventListeners() {
             return;
         }
         state.apiKey = key;
-        localStorage.setItem(API_KEY_KEY, key);
+        sessionStorage.setItem(API_KEY_KEY, key);
         dom.settingsModal.classList.add('hidden');
     });
 
