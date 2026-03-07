@@ -179,25 +179,23 @@ const THEME_KEY = 'solveit_theme';
 const MAX_HISTORY = 30;
 const PROXY_TIMEOUT_MS = 12000;
 
-const SYSTEM_PROMPT = `You are SolveIt, an expert problem solver and reverse engineer. The user has given you the text content AND source code of a webpage. Your job is to deeply analyze the page, find patterns, understand the underlying logic, and teach the user exactly HOW to solve it — not just give an overview.
+const SYSTEM_PROMPT = `You are SolveIt, an expert problem solver. The user has given you the content of a webpage. Your job is to SOLVE whatever is on the page — not summarize it.
 
 Instructions:
-1. First, identify what the page is (math problem, coding challenge, quiz, puzzle, game, homework, interactive app, form, etc.)
-2. Look at the SOURCE CODE carefully — analyze JavaScript logic, algorithms, answer keys, validation patterns, hidden data, API calls, and scoring mechanisms
-3. Identify PATTERNS: What rules govern the content? What's the underlying logic? What formula or algorithm is being used?
-4. Teach the user the SOLVING STRATEGY — explain the method, not just the answer. If there's a pattern, explain the pattern so they can apply it to similar problems
-5. If answers are embedded in the code (e.g. quiz answer keys, validation checks), extract and explain them
-6. If it's an interactive app or game, explain the mechanics and winning strategy
-7. Provide the actual SOLUTIONS with step-by-step work
-8. If the content contains multiple problems, solve ALL of them
+1. Identify what the page is (math problem, coding challenge, quiz, puzzle, game, homework, article, etc.)
+2. SOLVE the actual problems. Provide answers, not overviews.
+3. Identify PATTERNS — what rules, formulas, or logic govern the content? Teach the user HOW to solve it so they can apply the method to similar problems.
+4. If the content contains multiple problems, solve ALL of them
+5. If source code is included below, analyze it for answer keys, validation logic, scoring, and hidden data — only mention code findings if they help solve the problem
+6. For math, show all work step by step
+7. For coding challenges, provide working code with explanations
+8. For quizzes/tests, provide all correct answers with reasoning
+9. For articles or informational pages, provide key takeaways and a thorough summary
 
 Important:
-- Do NOT just summarize or give an overview. SOLVE the actual problems.
-- If you find answer patterns in the code, show them
-- If there's a formula or algorithm, explain it clearly
-- For math, show all work step by step
-- For coding challenges, provide working code with explanations
-- For quizzes/tests, provide all correct answers with reasoning
+- SOLVE, don't summarize. Give actual answers.
+- If there's a pattern or formula, explain it clearly
+- Be direct and useful
 
 Format your response as follows:
 ## [Type of Content]
@@ -205,13 +203,7 @@ Brief one-line description of what you found.
 
 ---
 
-### Strategy / Patterns
-[Explain the underlying pattern, formula, or approach — teach them HOW to solve it]
-
-### Solutions
-[Detailed step-by-step solutions with final answers]
-
-If you found useful information in the source code, include a "### Code Analysis" section explaining what you found.
+[Your detailed solutions here, with step-by-step work, answers, and any patterns you noticed]
 
 If the content seems too vague or the page text is empty/unhelpful, explain what you see and suggest what the user could try instead.`;
 
@@ -724,11 +716,13 @@ async function solve() {
             if (!html) throw new Error('Could not fetch the page. The site may be blocking access or the URL may be invalid.');
 
             showStatus('Extracting content...');
-            const extracted = extractContent(html, url);
-            const sourceCode = extractSourceCode(html);
-            content = extracted;
-            if (sourceCode) {
-                content += '\n\n--- SOURCE CODE ---\n' + sourceCode;
+            content = extractContent(html, url);
+            // Only include source code if the page looks interactive (quiz, game, form, etc.)
+            if (looksInteractive(html)) {
+                const sourceCode = extractSourceCode(html);
+                if (sourceCode) {
+                    content += '\n\n--- SOURCE CODE (included because this page appears interactive) ---\n' + sourceCode;
+                }
             }
         }
 
@@ -964,6 +958,22 @@ function extractTable(table) {
         }
     });
     return result;
+}
+
+// --------------- Interactive Detection ---------------
+function looksInteractive(html) {
+    const lower = html.toLowerCase();
+    const signals = [
+        '<form', '<input', '<select', '<button', 'data-answer', 'data-correct',
+        'data-solution', 'quiz', 'score', 'submit', 'check answer', 'correct',
+        'incorrect', 'addEventListener', 'onclick', '.value', 'validate',
+        'game', 'puzzle', 'challenge', 'timer', 'countdown',
+    ];
+    let hits = 0;
+    for (const s of signals) {
+        if (lower.includes(s)) hits++;
+    }
+    return hits >= 3;
 }
 
 // --------------- Source Code Extraction ---------------
