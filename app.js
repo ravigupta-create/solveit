@@ -1,16 +1,25 @@
 /* ===== SolveIt — app.js ===== */
 
 // --------------- Authentication ---------------
-const AUTH_HASH = '084b39bea6bae84197e8010025724ddd792e28e604455aec6f018d5562f29508';
+// PBKDF2-HMAC-SHA256 with 100,000 iterations (same security as TwinCatcher Pro)
+const AUTH_HASH = 'eed14aa4ff2fe7631f239ba1f2249aa5b08be06eb20b88fe13ae225b164202ce';
+const AUTH_SALT = 'solveit_auth_salt_2026';
+const AUTH_ITERATIONS = 100000;
 const AUTH_SESSION_KEY = 'solveit_auth';
 const AUTH_LOCKOUT_KEY = 'solveit_lockout';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
-async function sha256(text) {
-    const encoded = new TextEncoder().encode(text);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
+async function hashPassword(password) {
+    const encoder = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']
+    );
+    const derivedBits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt: encoder.encode(AUTH_SALT), iterations: AUTH_ITERATIONS, hash: 'SHA-256' },
+        keyMaterial, 256
+    );
+    const hashArray = Array.from(new Uint8Array(derivedBits));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -89,7 +98,7 @@ function setupAuth() {
             return;
         }
 
-        const hash = await sha256(password);
+        const hash = await hashPassword(password);
         if (hash === AUTH_HASH) {
             // Success
             sessionStorage.setItem(AUTH_SESSION_KEY, 'true');
