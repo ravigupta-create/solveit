@@ -6,9 +6,11 @@
     <title>SolveIt — Instant Solutions for Any Website</title>
     <meta name="description" content="Paste any website link and get instant solutions, explanations, and answers. Powered by AI. 100% Free.">
     <meta name="referrer" content="no-referrer">
-    <meta name="theme-color" content="#07070f">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://generativelanguage.googleapis.com https://api.allorigins.win https://corsproxy.io https://*.workers.dev; img-src 'self' data:;">
+    <meta name="theme-color" content="#07070f" id="metaThemeColor">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://generativelanguage.googleapis.com https://api.allorigins.win https://corsproxy.io https://*.workers.dev; img-src 'self' data: blob:;">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1f9e0;</text></svg>">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -51,6 +53,10 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                     <span id="rateLimitCount">0</span><span class="rate-limit-max">/500</span>
                 </div>
+                <button class="nav-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle light/dark theme">
+                    <svg class="theme-icon-dark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    <svg class="theme-icon-light hidden" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                </button>
                 <button class="nav-btn" id="changeKeyBtn" title="Change API Key" aria-label="Change API Key">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
                     <span>API Key</span>
@@ -97,7 +103,7 @@
                         <span class="step-number">3</span>
                         <div class="step-content">
                             <h3>Start Solving</h3>
-                            <p>Paste any website link and get instant solutions. Math, code, quizzes, puzzles — anything.</p>
+                            <p>Paste any website link, upload an image, or drop a PDF — get instant solutions.</p>
                         </div>
                     </div>
                 </div>
@@ -173,7 +179,7 @@
                 Paste a link.<br>
                 <span class="gradient-text">Get the solution.</span>
             </h1>
-            <p class="hero-subtitle">SolveIt analyzes any website and provides instant solutions, step-by-step explanations, and answers. Powered by AI. 100% Free.</p>
+            <p class="hero-subtitle">SolveIt analyzes any website, image, or PDF and provides instant solutions, step-by-step explanations, and answers. Powered by AI. 100% Free.</p>
         </section>
 
         <!-- Input Section -->
@@ -196,6 +202,20 @@
                 </button>
             </div>
 
+            <!-- Image Upload Area -->
+            <div class="upload-area" id="uploadArea">
+                <input type="file" id="imageInput" accept="image/*" class="upload-file-input" aria-label="Upload image">
+                <div class="upload-content" id="uploadContent">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    <span>Upload an image or drag &amp; drop — solve from a screenshot</span>
+                </div>
+                <div class="upload-preview hidden" id="uploadPreview">
+                    <img id="previewImg" alt="Uploaded image preview">
+                    <button class="upload-remove" id="removeImage" title="Remove image">&times;</button>
+                    <button class="btn-primary btn-sm upload-solve-btn" id="solveImageBtn">Solve Image</button>
+                </div>
+            </div>
+
             <!-- Status Messages -->
             <div class="status-bar hidden" id="statusBar" role="status" aria-live="polite">
                 <div class="status-indicator"></div>
@@ -212,6 +232,9 @@
                         <span class="result-url" id="resultUrl"></span>
                     </div>
                     <div class="results-actions">
+                        <button class="btn-icon" id="downloadResultBtn" title="Download solution" aria-label="Download solution as markdown">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        </button>
                         <button class="btn-icon" id="copyResultBtn" title="Copy solution" aria-label="Copy solution">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                             <span class="copy-feedback hidden">Copied!</span>
@@ -264,6 +287,8 @@
     <script src="lib/purify.min.js"></script>
     <script src="lib/marked.min.js"></script>
     <script src="lib/highlight.min.js"></script>
+    <script src="lib/pdf.min.js"></script>
+    <script src="lib/Readability.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

@@ -101,7 +101,6 @@ function setupAuth() {
 
         const hash = await hashPassword(password);
         if (hash === AUTH_HASH) {
-            // Success
             // Don't persist auth — password required every reload
             saveLockoutState({ attempts: 0, lockedUntil: 0 });
             overlay.style.animation = 'fadeOut 0.3s ease forwards';
@@ -170,11 +169,13 @@ const DEFAULT_CORS_PROXIES = [
 ];
 
 const MAX_CONTENT_LENGTH = 30000;
+const MAX_IMAGE_SIZE = 4 * 1024 * 1024; // 4MB — Gemini limit
 const HISTORY_KEY = 'solveit_history';
 const API_KEY_KEY = 'solveit_api_key';
 const MODEL_KEY = 'solveit_model';
 const PROXY_KEY = 'solveit_custom_proxy';
 const RATE_KEY = 'solveit_rate';
+const THEME_KEY = 'solveit_theme';
 const MAX_HISTORY = 30;
 const PROXY_TIMEOUT_MS = 12000;
 
@@ -200,11 +201,31 @@ Brief one-line description of what you found.
 
 If the content seems too vague or the page text is empty/unhelpful, explain what you see and suggest what the user could try instead.`;
 
+const IMAGE_SYSTEM_PROMPT = `You are SolveIt, an expert problem solver. The user has uploaded an image (e.g. a screenshot, photo of homework, math problem, quiz, diagram, or any visual content). Analyze the image thoroughly and provide a comprehensive solution or explanation.
+
+Instructions:
+1. Identify what the image contains (math problem, coding challenge, quiz, puzzle, diagram, chart, etc.)
+2. Provide a clear, well-structured solution using markdown formatting
+3. Use step-by-step reasoning where appropriate
+4. Include the final answer prominently
+5. If the image contains multiple problems, solve all of them
+6. For math, show all work clearly
+7. For code, provide clean, working code with explanations
+
+Format your response as follows:
+## [Type of Content]
+Brief one-line description of what you found.
+
+---
+
+[Your detailed solution here, using markdown headers, lists, code blocks, etc.]`;
+
 // --------------- State ---------------
 const state = {
     apiKey: sessionStorage.getItem(API_KEY_KEY) || '',
     model: localStorage.getItem(MODEL_KEY) || 'gemini-2.5-flash',
     customProxy: localStorage.getItem(PROXY_KEY) || '',
+    theme: localStorage.getItem(THEME_KEY) || 'dark',
     history: (() => {
         try {
             return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
@@ -215,7 +236,26 @@ const state = {
     })(),
     isAnalyzing: false,
     abortController: null,
+    uploadedImage: null, // { base64, mimeType }
+    lastMarkdown: '',    // for download
+    lastSource: '',      // URL or 'image upload'
 };
+
+// --------------- Theme ---------------
+function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    state.theme = theme;
+    localStorage.setItem(THEME_KEY, theme);
+    const meta = document.getElementById('metaThemeColor');
+    if (meta) meta.content = theme === 'light' ? '#f5f5fa' : '#07070f';
+    // Toggle icons
+    const darkIcon = document.querySelector('.theme-icon-dark');
+    const lightIcon = document.querySelector('.theme-icon-light');
+    if (darkIcon && lightIcon) {
+        darkIcon.classList.toggle('hidden', theme === 'light');
+        lightIcon.classList.toggle('hidden', theme === 'dark');
+    }
+}
 
 // --------------- Rate Limit Tracking ---------------
 function getRateData() {
@@ -286,6 +326,7 @@ const dom = {
     customProxyInput: $('#customProxyInput'),
     saveProxyBtn:     $('#saveProxyBtn'),
     clearProxyBtn:    $('#clearProxyBtn'),
+    themeToggle:      $('#themeToggle'),
     // Main
     mainContent:      $('#mainContent'),
     urlInput:         $('#urlInput'),
@@ -294,6 +335,14 @@ const dom = {
     solveBtnText:     $('.btn-solve-text'),
     solveBtnLoading:  $('.btn-solve-loading'),
     solveBtnArrow:    $('.btn-solve-arrow'),
+    // Image upload
+    uploadArea:       $('#uploadArea'),
+    imageInput:       $('#imageInput'),
+    uploadContent:    $('#uploadContent'),
+    uploadPreview:    $('#uploadPreview'),
+    previewImg:       $('#previewImg'),
+    removeImage:      $('#removeImage'),
+    solveImageBtn:    $('#solveImageBtn'),
     // Status
     statusBar:        $('#statusBar'),
     statusText:       $('#statusText'),
@@ -303,6 +352,7 @@ const dom = {
     resultBadge:      $('#resultBadge'),
     resultUrl:        $('#resultUrl'),
     copyResultBtn:    $('#copyResultBtn'),
+    downloadResultBtn:$('#downloadResultBtn'),
     newSolveBtn:      $('#newSolveBtn'),
     // Error
     errorSection:     $('#errorSection'),
@@ -327,6 +377,14 @@ function init() {
 
     // Clear any old persisted API key from localStorage (now session-only)
     localStorage.removeItem(API_KEY_KEY);
+
+    // Configure pdf.js worker
+    if (typeof pdfjsLib !== 'undefined') {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+    }
+
+    // Apply saved theme
+    applyTheme(state.theme);
 
     // Always show setup modal on fresh page load so user can enter/re-enter key
     if (!state.apiKey) {
@@ -367,6 +425,11 @@ function setupEventListeners() {
         dom.setupModal.classList.remove('hidden');
         dom.apiKeyInput.value = state.apiKey;
         dom.saveKeyBtn.disabled = !state.apiKey || state.apiKey.length < 10;
+    });
+
+    // Theme toggle
+    dom.themeToggle.addEventListener('click', () => {
+        applyTheme(state.theme === 'dark' ? 'light' : 'dark');
     });
 
     // Settings
@@ -470,6 +533,27 @@ function setupEventListeners() {
         }
     });
 
+    // Image upload
+    dom.imageInput.addEventListener('change', handleImageSelect);
+    dom.uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dom.uploadArea.classList.add('drag-over');
+    });
+    dom.uploadArea.addEventListener('dragleave', () => {
+        dom.uploadArea.classList.remove('drag-over');
+    });
+    dom.uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dom.uploadArea.classList.remove('drag-over');
+        const file = e.dataTransfer.files[0];
+        if (file && file.type.startsWith('image/')) {
+            processImageFile(file);
+        }
+    });
+    dom.uploadContent.addEventListener('click', () => dom.imageInput.click());
+    dom.removeImage.addEventListener('click', clearImage);
+    dom.solveImageBtn.addEventListener('click', solveImage);
+
     // Copy result
     dom.copyResultBtn.addEventListener('click', () => {
         const text = dom.resultsBody.innerText;
@@ -483,6 +567,9 @@ function setupEventListeners() {
             fb._timeout = setTimeout(() => fb.classList.add('hidden'), 1500);
         });
     });
+
+    // Download result
+    dom.downloadResultBtn.addEventListener('click', downloadResult);
 
     // New solve
     dom.newSolveBtn.addEventListener('click', resetToInput);
@@ -505,6 +592,83 @@ function setupEventListeners() {
             if (!dom.settingsModal.classList.contains('hidden')) dom.settingsModal.classList.add('hidden');
         }
     });
+}
+
+// --------------- Image Handling ---------------
+function handleImageSelect(e) {
+    const file = e.target.files[0];
+    if (file) processImageFile(file);
+}
+
+function processImageFile(file) {
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > MAX_IMAGE_SIZE) {
+        showError('Image Too Large', `The image is ${(file.size / 1024 / 1024).toFixed(1)}MB. Maximum size is 4MB. Please use a smaller image.`);
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const base64Full = e.target.result;
+        const base64Data = base64Full.split(',')[1];
+        state.uploadedImage = { base64: base64Data, mimeType: file.type };
+
+        dom.previewImg.src = base64Full;
+        dom.uploadContent.classList.add('hidden');
+        dom.uploadPreview.classList.remove('hidden');
+    };
+    reader.readAsDataURL(file);
+}
+
+function clearImage() {
+    state.uploadedImage = null;
+    dom.imageInput.value = '';
+    dom.previewImg.src = '';
+    dom.uploadPreview.classList.add('hidden');
+    dom.uploadContent.classList.remove('hidden');
+}
+
+async function solveImage() {
+    if (!state.uploadedImage || state.isAnalyzing) return;
+
+    if (!state.apiKey) {
+        dom.setupModal.classList.remove('hidden');
+        return;
+    }
+
+    const rateData = getRateData();
+    const modelInfo = GEMINI_MODELS[state.model];
+    if (rateData.count >= (modelInfo?.rpd || 500)) {
+        showError('Daily Limit Reached', `You've used all ${modelInfo.rpd} free requests for today.`);
+        return;
+    }
+
+    state.isAnalyzing = true;
+    state.abortController = new AbortController();
+
+    setLoading(true);
+    showStatus('AI is analyzing the image...');
+    hideError();
+    hideResults();
+
+    try {
+        const markdown = await analyzeImageWithGemini(state.uploadedImage);
+        recordRequest();
+        state.lastSource = 'Image Upload';
+        addToHistory('Image Upload', markdown);
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            showStatus('Cancelled.');
+            setTimeout(hideStatus, 1500);
+            return;
+        }
+        showError(getErrorTitle(err), err.message);
+    } finally {
+        state.isAnalyzing = false;
+        state.abortController = null;
+        setLoading(false);
+        hideStatus();
+    }
 }
 
 // --------------- Core: Solve ---------------
@@ -534,11 +698,21 @@ async function solve() {
     hideResults();
 
     try {
-        const html = await fetchUrl(url, state.abortController.signal);
-        if (!html) throw new Error('Could not fetch the page. The site may be blocking access or the URL may be invalid.');
+        // Check if PDF
+        const isPdf = url.match(/\.pdf(\?|#|$)/i);
+        let content;
 
-        showStatus('Extracting content...');
-        const content = extractContent(html, url);
+        if (isPdf && typeof pdfjsLib !== 'undefined') {
+            showStatus('Downloading PDF...');
+            content = await fetchPdfContent(url, state.abortController.signal);
+        } else {
+            const html = await fetchUrl(url, state.abortController.signal);
+            if (!html) throw new Error('Could not fetch the page. The site may be blocking access or the URL may be invalid.');
+
+            showStatus('Extracting content...');
+            content = extractContent(html, url);
+        }
+
         if (!content || content.trim().length < 20) {
             throw new Error('Could not extract meaningful content from the page. It may require login or use heavy JavaScript rendering.');
         }
@@ -549,6 +723,7 @@ async function solve() {
         // Track the request
         recordRequest();
 
+        state.lastSource = url;
         addToHistory(url, markdown);
 
     } catch (err) {
@@ -564,6 +739,56 @@ async function solve() {
         setLoading(false);
         hideStatus();
     }
+}
+
+// --------------- PDF Extraction ---------------
+async function fetchPdfContent(url, signal) {
+    const proxies = getCorsProxies();
+
+    for (const proxy of proxies) {
+        try {
+            const proxyUrl = proxy.url(url);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+
+            const onAbort = () => controller.abort();
+            if (signal) signal.addEventListener('abort', onAbort);
+
+            const resp = await fetch(proxyUrl, {
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
+            if (signal) signal.removeEventListener('abort', onAbort);
+
+            if (!resp.ok) continue;
+
+            const arrayBuffer = await resp.arrayBuffer();
+            if (arrayBuffer.byteLength < 100) continue;
+
+            showStatus('Extracting text from PDF...');
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let fullText = '';
+
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map(item => item.str).join(' ');
+                fullText += `\n--- Page ${i} ---\n${pageText}\n`;
+            }
+
+            fullText = fullText.trim();
+            if (fullText.length > MAX_CONTENT_LENGTH) {
+                fullText = fullText.substring(0, MAX_CONTENT_LENGTH) + '\n\n[Content truncated due to length]';
+            }
+
+            return fullText;
+        } catch (e) {
+            if (e.name === 'AbortError' && signal?.aborted) throw e;
+            continue;
+        }
+    }
+
+    throw new Error('Could not download or parse the PDF. Try a direct webpage URL instead.');
 }
 
 // --------------- Fetch URL ---------------
@@ -590,17 +815,21 @@ async function fetchUrl(url, signal) {
 
             const contentType = resp.headers.get('content-type') || '';
             if (contentType.includes('application/pdf')) {
-                throw new Error('PDF files are not supported. Please paste a webpage URL instead, or copy the text content from the PDF.');
+                // Redirect to PDF handler
+                if (typeof pdfjsLib !== 'undefined') {
+                    return null; // will be caught and we'll use fetchPdfContent
+                }
+                throw new Error('PDF detected but PDF reader is not available.');
             }
             if (contentType.includes('image/')) {
-                throw new Error('Image URLs are not supported. Please paste a webpage URL instead.');
+                throw new Error('Image URLs are not directly supported. Use the image upload feature below instead.');
             }
 
             const text = await resp.text();
             if (text && text.length > 50) return text;
         } catch (e) {
             if (e.name === 'AbortError' && signal?.aborted) throw e;
-            if (e.message.includes('not supported')) throw e;
+            if (e.message.includes('not supported') || e.message.includes('not available') || e.message.includes('upload feature')) throw e;
             continue;
         }
     }
@@ -612,6 +841,26 @@ function extractContent(html, url) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
+    // Try Readability first for cleaner extraction
+    if (typeof Readability !== 'undefined') {
+        try {
+            const clone = doc.cloneNode(true);
+            const article = new Readability(clone).parse();
+            if (article && article.textContent && article.textContent.trim().length > 100) {
+                let text = '';
+                if (article.title) text += `Page Title: ${article.title}\n\n`;
+                text += article.textContent.trim();
+                if (text.length > MAX_CONTENT_LENGTH) {
+                    text = text.substring(0, MAX_CONTENT_LENGTH) + '\n\n[Content truncated due to length]';
+                }
+                return text;
+            }
+        } catch {
+            // Fall through to manual extraction
+        }
+    }
+
+    // Fallback: manual extraction
     const removeSelectors = [
         'script', 'style', 'noscript', 'iframe',
         'body > nav', 'body > header', 'body > footer',
@@ -723,6 +972,45 @@ async function analyzeWithGemini(content, url) {
         }),
     });
 
+    return handleStreamResponse(resp, url);
+}
+
+async function analyzeImageWithGemini(imageData) {
+    const apiUrl = `${GEMINI_API_BASE}/${state.model}:streamGenerateContent?alt=sse&key=${state.apiKey}`;
+
+    const resp = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: state.abortController?.signal,
+        body: JSON.stringify({
+            contents: [{
+                parts: [
+                    { text: IMAGE_SYSTEM_PROMPT },
+                    {
+                        inlineData: {
+                            mimeType: imageData.mimeType,
+                            data: imageData.base64,
+                        },
+                    },
+                ],
+            }],
+            generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 8192,
+            },
+            safetySettings: [
+                { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+                { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+            ],
+        }),
+    });
+
+    return handleStreamResponse(resp, 'Image Upload');
+}
+
+async function handleStreamResponse(resp, source) {
     if (!resp.ok) {
         const errBody = await resp.text().catch(() => '');
         if (resp.status === 400 && errBody.includes('API_KEY_INVALID')) {
@@ -738,7 +1026,7 @@ async function analyzeWithGemini(content, url) {
         throw new Error(`Gemini API returned status ${resp.status}. Please try again.`);
     }
 
-    showResults(url);
+    showResults(source);
     dom.resultsBody.innerHTML = '';
     dom.resultsBody.classList.add('streaming-cursor');
 
@@ -798,7 +1086,22 @@ async function analyzeWithGemini(content, url) {
         throw new Error('The AI did not return a response. The content may have been blocked by safety filters.');
     }
 
+    state.lastMarkdown = fullText;
     return fullText;
+}
+
+// --------------- Download ---------------
+function downloadResult() {
+    if (!state.lastMarkdown) return;
+    const filename = `solveit-${new Date().toISOString().slice(0, 10)}.md`;
+    const header = `# SolveIt Solution\n**Source:** ${state.lastSource}\n**Date:** ${new Date().toLocaleString()}\n\n---\n\n`;
+    const blob = new Blob([header + state.lastMarkdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 // --------------- History ---------------
@@ -880,6 +1183,9 @@ function loadHistoryItem(item) {
     dom.solveBtn.disabled = false;
     showResults(item.url);
 
+    state.lastMarkdown = item.markdown || '';
+    state.lastSource = item.url;
+
     const content = item.markdown || item.solutionHtml || '';
     if (item.markdown) {
         dom.resultsBody.innerHTML = DOMPurify.sanitize(marked.parse(content));
@@ -948,6 +1254,7 @@ function resetToInput() {
     hideResults();
     hideError();
     hideStatus();
+    clearImage();
     dom.urlInput.focus();
 }
 
@@ -1008,8 +1315,18 @@ function getErrorTitle(err) {
     if (msg.includes('rate limit') || msg.includes('daily limit')) return 'Rate Limited';
     if (msg.includes('fetch') || msg.includes('blocking')) return 'Could Not Fetch Page';
     if (msg.includes('extract')) return 'Content Extraction Failed';
-    if (msg.includes('not supported')) return 'Unsupported Content';
+    if (msg.includes('not supported') || msg.includes('pdf')) return 'Unsupported Content';
+    if (msg.includes('image')) return 'Image Error';
     return 'Something Went Wrong';
+}
+
+// --------------- Service Worker (PWA) ---------------
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => {
+            // Service worker registration failed — not critical
+        });
+    });
 }
 
 // --------------- Start ---------------
