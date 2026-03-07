@@ -1,5 +1,152 @@
 /* ===== SolveIt — app.js ===== */
 
+// --------------- Authentication ---------------
+const AUTH_HASH = '084b39bea6bae84197e8010025724ddd792e28e604455aec6f018d5562f29508';
+const AUTH_SESSION_KEY = 'solveit_auth';
+const AUTH_LOCKOUT_KEY = 'solveit_lockout';
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+async function sha256(text) {
+    const encoded = new TextEncoder().encode(text);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function isAuthenticated() {
+    return sessionStorage.getItem(AUTH_SESSION_KEY) === 'true';
+}
+
+function getLockoutState() {
+    try {
+        const data = JSON.parse(localStorage.getItem(AUTH_LOCKOUT_KEY) || '{}');
+        return {
+            attempts: data.attempts || 0,
+            lockedUntil: data.lockedUntil || 0,
+        };
+    } catch {
+        return { attempts: 0, lockedUntil: 0 };
+    }
+}
+
+function saveLockoutState(state) {
+    try { localStorage.setItem(AUTH_LOCKOUT_KEY, JSON.stringify(state)); } catch { /* ignore */ }
+}
+
+function setupAuth() {
+    const overlay = document.getElementById('loginOverlay');
+    const passwordInput = document.getElementById('loginPassword');
+    const loginBtn = document.getElementById('loginBtn');
+    const errorEl = document.getElementById('loginError');
+    const lockoutEl = document.getElementById('loginLockout');
+    const lockoutTimerEl = document.getElementById('lockoutTimer');
+    const inputWrapper = passwordInput.closest('.login-input-wrapper');
+
+    if (isAuthenticated()) {
+        unlockApp();
+        return;
+    }
+
+    // Check if currently locked out
+    let lockoutInterval = null;
+    function checkLockout() {
+        const lockState = getLockoutState();
+        const now = Date.now();
+        if (lockState.lockedUntil > now) {
+            loginBtn.disabled = true;
+            passwordInput.disabled = true;
+            lockoutEl.classList.remove('hidden');
+            errorEl.classList.add('hidden');
+            const updateTimer = () => {
+                const remaining = Math.ceil((lockState.lockedUntil - Date.now()) / 1000);
+                if (remaining <= 0) {
+                    lockoutEl.classList.add('hidden');
+                    loginBtn.disabled = false;
+                    passwordInput.disabled = false;
+                    passwordInput.focus();
+                    saveLockoutState({ attempts: 0, lockedUntil: 0 });
+                    clearInterval(lockoutInterval);
+                } else {
+                    lockoutTimerEl.textContent = remaining;
+                }
+            };
+            updateTimer();
+            lockoutInterval = setInterval(updateTimer, 1000);
+            return true;
+        }
+        return false;
+    }
+    checkLockout();
+
+    async function attemptLogin() {
+        if (checkLockout()) return;
+
+        const password = passwordInput.value;
+        if (!password) {
+            inputWrapper.classList.add('error');
+            setTimeout(() => inputWrapper.classList.remove('error'), 400);
+            return;
+        }
+
+        const hash = await sha256(password);
+        if (hash === AUTH_HASH) {
+            // Success
+            sessionStorage.setItem(AUTH_SESSION_KEY, 'true');
+            saveLockoutState({ attempts: 0, lockedUntil: 0 });
+            overlay.style.animation = 'fadeOut 0.3s ease forwards';
+            setTimeout(unlockApp, 300);
+        } else {
+            // Failed
+            const lockState = getLockoutState();
+            lockState.attempts++;
+            if (lockState.attempts >= MAX_LOGIN_ATTEMPTS) {
+                lockState.lockedUntil = Date.now() + LOCKOUT_DURATION_MS;
+            }
+            saveLockoutState(lockState);
+
+            errorEl.textContent = `Incorrect password (${MAX_LOGIN_ATTEMPTS - lockState.attempts} attempts remaining)`;
+            if (lockState.attempts >= MAX_LOGIN_ATTEMPTS) {
+                errorEl.classList.add('hidden');
+            } else {
+                errorEl.classList.remove('hidden');
+            }
+            inputWrapper.classList.add('error');
+            setTimeout(() => inputWrapper.classList.remove('error'), 400);
+            passwordInput.value = '';
+            passwordInput.focus();
+            checkLockout();
+        }
+    }
+
+    loginBtn.addEventListener('click', attemptLogin);
+    passwordInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') attemptLogin();
+    });
+    // Clear error on typing
+    passwordInput.addEventListener('input', () => {
+        errorEl.classList.add('hidden');
+    });
+}
+
+function unlockApp() {
+    const overlay = document.getElementById('loginOverlay');
+    const header = document.getElementById('appHeader');
+    const main = document.getElementById('mainContent');
+    const footer = document.getElementById('appFooter');
+
+    overlay.classList.add('hidden');
+    header.classList.remove('hidden');
+    main.classList.remove('hidden');
+    footer.classList.remove('hidden');
+
+    // Now init the main app
+    init();
+}
+
+// Run auth on page load
+document.addEventListener('DOMContentLoaded', setupAuth);
+
 // --------------- Constants ---------------
 const GEMINI_MODELS = {
     'gemini-2.5-flash':      { label: 'Balanced', rpm: 10, rpd: 500 },
@@ -855,4 +1002,4 @@ function getErrorTitle(err) {
 }
 
 // --------------- Start ---------------
-init();
+// init() is called by setupAuth() after password verification
